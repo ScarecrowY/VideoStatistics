@@ -10,14 +10,47 @@ import googleapiclient.discovery
 import googleapiclient.errors
 
 scopes = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+max_result_limit = 50   # YouTube API limit its maxResults (result for each page) to be 50
 
+
+def get_video_ids(youtube, query, num_videos, page_token=None):
+    if num_videos > 50:
+        max_results = 50
+    else:
+        max_results = num_videos
+    num_videos -= max_results
+
+    # search for the video ids given a query
+    if not page_token:
+        request = youtube.search().list(
+            part="id",
+            q=query,
+            maxResults=max_results
+        )
+    else:
+        request = youtube.search().list(
+            part="id",
+            q=query,
+            maxResults=max_results,
+            pageToken=page_token
+        )
+    
+    try:
+        response = request.execute()
+    except Exception as e:
+        print(e)
+
+    video_ids = [d['id']['videoId'] for d in response['items']]
+    video_ids = ','.join(video_ids)
+
+    return video_ids, num_videos, response['nextPageToken']
+    
 
 def main():
     parser = argparse.ArgumentParser(description='search for YouTube videos and return their information')
     parser.add_argument('query', type=str, help='a query describing the videos you want to search')
-    parser.add_argument('--max_result', type=int, default=5, help='maximum number of videos to be displayed from 1 to 50 inclusive')
+    parser.add_argument('--num_videos', type=int, default=5, help='number of videos to be displayed')
     args = parser.parse_args()
-    print(args.max_result)
 
     # Disable OAuthlib's HTTPS verification when running locally.
     # *DO NOT* leave this option enabled in production.
@@ -34,32 +67,33 @@ def main():
     youtube = googleapiclient.discovery.build(
         api_service_name, api_version, credentials=credentials)
 
-    # search for the video ids given a query
-    request = youtube.search().list(
-        part="id",
-        q=args.query,
-        maxResults=args.max_result
-    )
+    query = args.query
+    num_videos = args.num_videos
+    video_ids = []
 
-    response = request.execute()
+    # get required number of video ids
+    page_token = None
+    while num_videos > 0:
+        new_video_ids, num_videos, page_token = get_video_ids(youtube, query, num_videos, page_token)
+        video_ids.append(new_video_ids)
 
-    video_ids = [d['id']['videoId'] for d in response['items']]
-    video_ids = ','.join(video_ids)
-    print(video_ids)
+    search_result = []
+    for id_seq in video_ids:
+        # retrieve video statistics given ids
+        request = youtube.videos().list(
+            part='snippet,statistics',
+            id=id_seq
+        )
 
-    # retrieve video statistics given ids
-    request = youtube.videos().list(
-        part='snippet,statistics',
-        id=video_ids
-    )
+        response = request.execute()
+        cur_result = [{
+            'id': d['id'],
+            'title': d['snippet']['title'],
+            'description': d['snippet']['description'],
+            'statistics': d['statistics']
+        } for d in response['items']]
 
-    response = request.execute()
-    search_result = [{
-        'id': d['id'],
-        'title': d['snippet']['title'],
-        'description': d['snippet']['description'],
-        'statistics': d['statistics']
-    } for d in response['items']]
+        search_result += cur_result
 
     with open('query_result.json', 'w') as output:
         json.dump(search_result, output, indent=4)
